@@ -1,0 +1,306 @@
+---
+title: "Data Analysis 3, Assignment 1"
+author: "Tunay Tokmak"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+
+```{r echo=FALSE }
+library(tidyverse)
+library(ggcorrplot)
+library(modelsummary)
+library(lspline)
+library(caret)
+library(modelsummary)
+library(lmtest)
+library(sandwich)
+library(kableExtra)
+```
+
+
+```{r echo=FALSE}
+original_df <- read_csv('morg-2014-emp.csv')
+```
+
+# RETAIL SALESPERSONS
+
+The selected occupation is retail salespersons. 
+
+```{r}
+retail_salespersons<- original_df %>% filter(occ2012 == 4760) %>% select(-occ2012)
+```
+
+```{r echo=FALSE}
+retail_salespersons   <- retail_salespersons   %>% mutate(earning_hour = earnwke / uhours)
+```
+
+
+# OUTLIER DETECTION
+
+The maximum value is two times higher than the 99th percentile and the minimum value corresponds to 7 cents which is likely an error. 
+```{r echo=FALSE}
+P01 <- function(x){quantile(x, 0.01)}
+P99 <- function(x){quantile(x, 0.99)}
+datasummary( earning_hour~ Mean + SD + P0 + P01 + P25 + P50 + P75 +  P99 + P100,  
+             data = retail_salespersons )
+
+```
+
+
+Therefore the lower bound and the upper bound are set as 0.01th and 0.99th percentiles, and the values below or above are considered as outliers.
+
+```{r echo=FALSE}
+lower_bound <-  quantile(retail_salespersons$earning_hour, 0.01)
+upper_bound <-  quantile(retail_salespersons$earning_hour, 0.99)
+indexes <-  which(retail_salespersons$earning_hour >= lower_bound & retail_salespersons$earning_hour <= upper_bound)
+retail_salespersons <- retail_salespersons[indexes,]
+```
+
+Let's see how the hourly pay is distributed
+
+```{r echo=FALSE}
+ggplot(retail_salespersons  , aes(earning_hour)) +
+  geom_histogram(color = 'white', fill = '#1098CF') +
+  labs(title = 'Distribution of Hourly Pays', y = 'frequency', x ='hourly pay') +
+  theme_bw()
+
+```
+
+# PARAMETER SELECTION
+
+```{r echo=FALSE}
+ggcorrplot(cor(retail_salespersons %>% select_if(is.numeric)), type = 'lower', lab = TRUE, lab_size = 2.5)
+```
+
+The correlation matrix suggests that hourly pay is positively correlated with the highest grade completed and the age while it is negatively correlated with the marital status and the gender of a retail salesperson.
+
+## Highest Grade Achieved and Hourly Pay
+
+```{r echo=FALSE}
+ggplot(retail_salespersons  , aes(grade92, earning_hour)) +
+  geom_point(color = '#1098CF', alpha = .5) +
+  geom_smooth(method = 'loess', se = FALSE, color = '#a969a0', size = 1) +
+  labs(title = 'Loess, Hourly Pay and Highest Grade Achieved', y = 'hourly pay',  x = 'grade') +
+  theme_bw()
+```
+It is observed that the hourly pay follows a linear trend after 40. 40 corresponds to 'some college but no degree'. The inference is that retail salespersons who hold a degree tend to earn more in general as their level of education increases. Considering that the highest grade achieved is indeed categorical, I introduce them as factors in the model. 
+
+
+
+## Age and Hourly Pay
+
+```{r echo=FALSE}
+ggplot(retail_salespersons  , aes(age, earning_hour)) +
+  geom_point(color = '#1098CF', alpha = .5) +
+  geom_smooth(method = 'loess', se = FALSE, color = '#a969a0', size = 1) +
+  labs(title = 'Loess, Age and Hourly Pay', y = 'hourly pay',  x = 'age') +
+  theme_bw()
+```
+The loess shows that the hourly pay tend to generally increase as the age of a retail sales person increases.
+
+```{r}
+retail_salespersons <- retail_salespersons %>% mutate(age_sqr = age ^ 2)
+```
+
+
+## Marital Status and Hourly Pay
+
+When the marital attribute is examined, it is seen that the marital status 1 and 2 signifies the presence of a partner when the rest of the values signifies the absence of a partner. Therefore, I create a binary variable named single. 
+
+```{r}
+retail_salespersons <- retail_salespersons %>% mutate(single = as.numeric(!(marital == 1 | 
+                                                                            marital == 2)))
+```
+
+
+
+```{r echo=FALSE}
+ggplot(retail_salespersons  , aes(x = factor(single), y =earning_hour)) +
+  geom_boxplot( color = '#1098CF', alpha = .5) +
+  stat_summary(fun=mean, geom="point", shape=20, size=2, color='#a969a0') +
+  labs(title ='Marital Status and Hourly Pay', x = 'marital status', y = 'hourly pay') +
+  scale_x_discrete(labels = c('married','single')) +
+  theme_bw()
+```
+
+As it is clearly seen, married retail sales persons have a wider range of hourly pays even though the mean hourly pays are not that different. 
+
+
+## Children and Hourly Pay 
+
+```{r}
+retail_salespersons %>% count(chldpres) %>% arrange(n)
+# 12,15,7,13,9,14
+```
+
+When the present child  variable is examined, it is seen that 12,15,7,13,9,15 are observed with a very low frequency. Therefore, they are omitted. 
+
+```{r}
+retail_salespersons <- retail_salespersons %>% filter( !(chldpres %in% c(12,15,7,13,9,15)))
+```
+
+Let's see if the retail salespersons who does not have kids earn less or more.
+
+```{r echo=FALSE}
+retail_salespersons <- retail_salespersons %>% mutate(kid = as.numeric(chldpres != 0))
+ggplot(retail_salespersons  , aes(x = as.factor(kid), y =earning_hour)) +
+  geom_boxplot( color = '#1098CF', alpha = .5) +
+  stat_summary(fun=mean, geom="point", shape=20, size=2, color='#a969a0') +
+  labs(title ='Present Child and Hourly Pay', x = 'present child', y = 'hourly pay') +
+  theme_bw()
+```
+It can be observed that retail salespersons without kids earn less on average with a narrower pay range. Therefore I introduced a binary variable that indicates if a person has a child or not.
+
+```{r}
+retail_salespersons <- retail_salespersons %>% mutate(kid=as.numeric(chldpres > 0))
+```
+
+## Gender and Hourly Pay
+
+I introduce a binary variable to indicate if a retail salesperson is a woman or not.
+
+```{r}
+
+retail_salespersons <- retail_salespersons %>% mutate(female = as.numeric(sex == 2))
+```
+
+
+```{r echo=FALSE}
+ggplot(retail_salespersons  , aes(x = factor(female), y =earning_hour)) +
+  geom_boxplot( color = '#1098CF', alpha = .5) +
+  stat_summary(fun=mean, geom="point", shape=20, size=2, color='#a969a0') +
+  labs(title ='Gender and Hourly Pay', x = 'gender', y = 'hourly pay') +
+  scale_x_discrete(labels = c('male','female')) +
+  theme_bw()
+```
+
+We see that female retail salespersons have a narrower hourly pay range than male retail salespersons.
+
+## Race and Hourly Pay
+
+To see if the hourly pay varies with the race of the retail sales person, let's compare white and black people.
+
+```{r echo=FALSE}
+ggplot(retail_salespersons %>% filter( race == 1 | race == 2 )  , 
+       aes(x = as.factor(race), y =earning_hour)) +
+  geom_boxplot( color = '#1098CF', alpha = .5) +
+  stat_summary(fun=mean, geom="point", shape=20, size=2, color='#a969a0') +
+  labs(title ='Race and Hourly Pay', x = 'race', y = 'hourly pay') +
+  scale_x_discrete(labels = c('white','black')) +
+  theme_bw()
+```
+
+The race and hourly pay plot shows that black people have narrower pay range and lower mean hourly pay.Let's create the relevant variables considering asian and hispanic people as well.
+
+```{r}
+retail_salespersons <- retail_salespersons %>% mutate(white=as.numeric(race==1), black = as.numeric(race==2),
+                              asian = as.numeric(race==4),hispanic = as.numeric(!is.na(ethnic)),
+                              other = as.numeric(white==0 & black==0 & asian==0 & hispanic==0))
+```
+
+
+# MODELS
+
+```{r}
+
+model1 <- as.formula(earning_hour ~ age + age_sqr  + as.factor(grade92), 
+                    retail_salespersons)
+model2 <- as.formula(earning_hour ~ age + age_sqr + as.factor(grade92) + 
+                     female + single + female*single,
+                     retail_salespersons)
+model3 <- as.formula(earning_hour ~ age + age_sqr + as.factor(grade92) + 
+                     female + single +
+                     kid + female*kid + female*single,
+                     retail_salespersons)
+model4  <- as.formula(earning_hour ~ age + age_sqr + as.factor(grade92) + 
+                      female + single +
+                      kid + female*kid + female*single +
+                      white + black + asian + hispanic + other,
+                      retail_salespersons)
+```
+
+The parameter choices for models heavily depend on the correlation coefficients. As mentioned above, the age and the highest grade achieved are positively correlated with the hourly payment more than rest of the variables. Apart from this, correlation matrix revealed that the gender and marital status are negatively correlated with the hourly pay. As it is observed in the gender and hourly pay boxplot, female retail salespersons have a narrower pay range even though the average is close to male's mean hourly pay. Therefore, I decided to take gender into account. When it comes to marital status, it makes sense that people who live alone are most likely be satisfied with lower pays. Indeed, when the retail salespersons are categorized as married and single, it is observed clearly from the marital status and hourly pay boxplot that single people earn less on average and have a narrower pay range. Retail salespersons who do not have kids earn less on average. Usually women earn less in case they have children becuase they are caregivers and work part time and have lower salaries. The interaction term of kid,female may represent this as well as the single,female. Lastly, the race and hourly pay boxplot revealed that black people have narrower pay range and lower mean hourly pay. Considering the race factor white, black, asian, hispanic and other variables are created and added as parameters. 
+
+
+```{r echo=FALSE}
+
+reg1 <- lm(model1, data= retail_salespersons)
+reg2 <- lm(model2, data= retail_salespersons)
+reg3 <- lm(model3, data= retail_salespersons)
+reg4 <- lm(model4, data= retail_salespersons)
+
+
+
+models <- c("reg1", "reg2","reg3", "reg4")
+AIC <- c()
+BIC <- c()
+RMSE <- c()
+RSquared <- c()
+regr <- c()
+n <- c()
+
+for ( i in 1:length(models)){
+  AIC[i] <- AIC(get(models[i]))
+  BIC[i] <- BIC(get(models[i]))
+  RMSE[i] <- RMSE(predict(get(models[i])), get(models[i])$model$earning_hour)
+  RSquared[i] <-summary(get(models[i]))$r.squared
+  regr[[i]] <- coeftest(get(models[i]), vcov = sandwich)
+  n[i] <- get(models[i])$rank -1
+}
+
+```
+
+## Evaluation of Models
+```{r echo=FALSE}
+eval <- data.frame(models, n, RSquared, RMSE, BIC)
+eval <- eval %>%
+  mutate(models = paste0("(",gsub("reg","",models),")")) %>%
+  rename(Model = models, "R-squared" = RSquared, "Training RMSE" = RMSE, "N predictors" = n)
+
+eval %>%
+  kbl(caption = 'Model Comparision') %>%
+  kable_paper("hover", full_width = F,latex_options = "hold_position")
+```
+
+We see that traning RMSE is the lowest for the most complicated model. However the BIC is higher than the second and third models. It is interesting to observe that the BIC score for the least complicated model is the highest as well as the RMSE.
+
+# CROSSFOLD VALIDATION
+
+```{r echo=FALSE}
+k <- 5
+
+set.seed(13505)
+cv1 <- train(model1, retail_salespersons, method = "lm", trControl = trainControl(method = "cv", number = k))
+set.seed(13505)
+cv2 <- train(model2, retail_salespersons, method = "lm", trControl = trainControl(method = "cv", number = k))
+set.seed(13505)
+cv3 <- train(model3, retail_salespersons, method = "lm", trControl = trainControl(method = "cv", number = k))
+set.seed(13505)
+cv4 <- train(model4, retail_salespersons, method = "lm", trControl = trainControl(method = "cv", number = k))
+
+cv <- c("cv1", "cv2", "cv3", "cv4")
+rmse_cv <- c()
+for(i in 1:length(cv)){
+  rmse_cv[i] <- sqrt((get(cv[i])$resample[[1]][1]^2 +
+                        get(cv[i])$resample[[1]][2]^2 +
+                        get(cv[i])$resample[[1]][3]^2 +
+                        get(cv[i])$resample[[1]][4]^2)/4)
+}
+
+
+
+```
+
+```{r echo=FALSE}
+
+data.frame(models,n, rmse_cv) %>% 
+ kbl(caption =  '5-fold RMSE results') %>%
+  kable_paper("hover", full_width = F, latex_options = "hold_position")
+```
+
+The RMSE scores of models do not vary significantly. The score of the second least complicated model is the lowest. Therefore, I would choose the second model with 20 parameters that considers the age, grade, gender and marital status.
